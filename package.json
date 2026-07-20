@@ -1,0 +1,19 @@
+{
+  "name": "exhibition-hub",
+  "version": "1.0.0",
+  "description": "Persönlicher Ausstellungs-Bot: recherchiert Ausstellungen und erzeugt Obsidian-Notizen",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
+    "better-sqlite3": "^12.4.1",
+    "express": "^5.1.0"
+  }
+}
