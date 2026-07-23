@@ -155,11 +155,10 @@ let history = [];
 let currentFilename = '';
 let currentMarkdown = '';
 
-async function checkSession() {
-  const res = await fetch('/api/session');
-  const { authed } = await res.json();
-  $('login').classList.toggle('hidden', authed);
-  $('appView').classList.toggle('hidden', !authed);
+function checkSession() {
+  // Login entfernt — App direkt anzeigen.
+  $('login').classList.add('hidden');
+  $('appView').classList.remove('hidden');
 }
 
 $('loginBtn').addEventListener('click', async () => {

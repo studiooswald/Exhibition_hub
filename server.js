@@ -16,13 +16,9 @@ function sessionToken() {
   return createHmac('sha256', APP_PASSWORD).update('exh-session-v1').digest('hex');
 }
 
-function isAuthed(c) {
-  if (!APP_PASSWORD) return true;
-  const cookie = getCookie(c, SESSION_COOKIE);
-  if (!cookie) return false;
-  const expected = Buffer.from(sessionToken());
-  const actual = Buffer.from(cookie);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+function isAuthed() {
+  // Login entfernt — die App ist offen zugänglich.
+  return true;
 }
 
 app.post('/api/login', async (c) => {
