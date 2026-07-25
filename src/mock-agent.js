@@ -61,6 +61,7 @@ export async function runMockAgent(messages, { onEvent, onSaveNote, trimSearchRe
   if (assistantTurns > 1) fields.ending_date = '2027-02-28';
 
   let round = 0;
+  let updatedThisRun = null;
   let result = await mockSave(fields, ++round);
 
   // Der Link zeigte nur auf die Startseite – nachbessern, wie es der echte Bot tut
@@ -69,7 +70,7 @@ export async function runMockAgent(messages, { onEvent, onSaveNote, trimSearchRe
     result = await mockSave({ ...fields, link: DEEP_LINK }, ++round);
   }
 
-  const closing = result.updated
+  const closing = updatedThisRun
     ? `Ich habe die Notiz aktualisiert – Nummer ${result.note.nr} bleibt.`
     : 'Alles klar, die Notiz steht – du kannst sie jetzt kopieren.';
   await streamText(closing, onEvent);
@@ -84,7 +85,8 @@ export async function runMockAgent(messages, { onEvent, onSaveNote, trimSearchRe
     onEvent({ type: 'status', text: 'Notiz wird gespeichert …' });
 
     const saved = await onSaveNote(saveFields);
-    onEvent({ type: 'note', note: saved.note, linkWarning: saved.linkWarning });
+    updatedThisRun = updatedThisRun ?? saved.updated;
+    onEvent({ type: 'note', note: saved.note, updated: updatedThisRun, linkWarning: saved.linkWarning });
     trimSearchResults(messages);
     messages.push({
       role: 'user',

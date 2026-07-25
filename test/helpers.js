@@ -2,13 +2,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+export const CHAT_ID = 4711;
+export const USER_ID = 1234567;
+
 /** Jeder Testlauf bekommt eine eigene, leere Datenbank. */
 export function useTempDataDir(startNr = '1') {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exhibition-hub-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exhibition-bot-test-'));
   process.env.DATA_DIR = dir;
   process.env.START_NR = startNr;
-  process.env.APP_PASSWORD = 'test-passwort';
-  process.env.SESSION_SECRET = 'test-secret-mindestens-16-zeichen';
+  process.env.TELEGRAM_BOT_TOKEN = `123456:${'A'.repeat(35)}`;
+  process.env.TELEGRAM_USER_ID = String(USER_ID);
   process.env.MOCK_AGENT = '1';
   process.env.TIMEZONE = 'Europe/Berlin';
   // Kein Netz in Tests: der Netz-Check hat eigene Tests gegen einen lokalen Server
@@ -16,55 +19,44 @@ export function useTempDataDir(startNr = '1') {
   return dir;
 }
 
-/** Startet die App auf einem freien Port und liefert einen Client dazu. */
-export async function startTestServer() {
-  const { createApp } = await import('../src/app.js');
-  const server = createApp().listen(0);
-  await new Promise((resolve) => server.once('listening', resolve));
-  const base = `http://127.0.0.1:${server.address().port}`;
+/** Attrappe der Telegram-Bibliothek, die alles mitschreibt statt zu senden. */
+export function fakeTelegram() {
+  let nextMessageId = 1;
+  const calls = { messages: [], edits: [], deletes: [], documents: [], actions: [] };
 
-  let cookie = '';
-  const client = {
-    base,
-    async request(method, url, body) {
-      const res = await fetch(base + url, {
-        method,
-        headers: {
-          ...(body ? { 'Content-Type': 'application/json' } : {}),
-          ...(cookie ? { Cookie: cookie } : {}),
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      const setCookie = res.headers.getSetCookie?.()[0];
-      if (setCookie) cookie = setCookie.split(';')[0];
-      return res;
+  return {
+    calls,
+    /** Alle Nachrichtentexte als ein Block – praktisch für Zusicherungen. */
+    get text() {
+      return calls.messages.map((message) => message.text).join('\n---\n');
     },
-    get: (url) => client.request('GET', url),
-    post: (url, body) => client.request('POST', url, body),
-    delete: (url) => client.request('DELETE', url),
-    async json(method, url, body) {
-      const res = await client.request(method, url, body);
-      return res.json();
+    async sendMessage(chatId, text, options = {}) {
+      calls.messages.push({ chatId, text, options });
+      return { message_id: nextMessageId++ };
     },
-    /** Schickt eine Chat-Nachricht und sammelt die SSE-Ereignisse ein. */
-    async chat(conversationId, message) {
-      const res = await client.request('POST', '/api/chat', { conversationId, message });
-      const text = await res.text();
-      const events = [];
-      for (const chunk of text.split('\n\n')) {
-        const type = /^event: (.+)$/m.exec(chunk)?.[1];
-        const data = /^data: (.+)$/m.exec(chunk)?.[1];
-        if (type && data) events.push({ type, data: JSON.parse(data) });
-      }
-      return events;
+    async editMessageText(text, options) {
+      calls.edits.push({ text, options });
+      return true;
     },
-    close: () => new Promise((resolve) => server.close(resolve)),
+    async deleteMessage(chatId, messageId) {
+      calls.deletes.push({ chatId, messageId });
+      return true;
+    },
+    async sendDocument(chatId, buffer, options = {}, fileOptions = {}) {
+      calls.documents.push({ chatId, content: buffer.toString('utf8'), options, fileOptions });
+      return { message_id: nextMessageId++ };
+    },
+    async sendChatAction() {
+      calls.actions.push('typing');
+      return true;
+    },
+    reset() {
+      for (const list of Object.values(calls)) list.length = 0;
+    },
   };
-  return client;
 }
 
-/** Letztes Notiz-Ereignis aus einem Chat-Durchlauf. */
-export function lastNote(events) {
-  const notes = events.filter((event) => event.type === 'note');
-  return notes[notes.length - 1]?.data;
+/** Baut eine eingehende Telegram-Nachricht. */
+export function incoming(text, { userId = USER_ID, chatId = CHAT_ID } = {}) {
+  return { chat: { id: chatId }, from: { id: userId, username: 'pete' }, text };
 }

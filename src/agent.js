@@ -67,6 +67,11 @@ export function trimSearchResults(messages) {
 export async function runAgent(messages, { onEvent, onSaveNote }) {
   if (config.mock) return runMockAgent(messages, { onEvent, onSaveNote, trimSearchResults });
 
+  // Bessert der Bot innerhalb eines Zuges nach (etwa den Link), bleibt es aus
+  // Sicht des Nutzers derselbe Vorgang. Ob die Notiz neu ist, entscheidet
+  // deshalb der erste Stand – sonst hieße es beim Nachbessern "aktualisiert".
+  let updatedThisRun = null;
+
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const stream = client.messages.stream({
       model: config.model,
@@ -113,7 +118,14 @@ export async function runAgent(messages, { onEvent, onSaveNote }) {
       continue;
     }
 
-    onEvent({ type: 'note', note: result.note, linkWarning: result.linkWarning });
+    updatedThisRun = updatedThisRun ?? result.updated;
+
+    onEvent({
+      type: 'note',
+      note: result.note,
+      updated: updatedThisRun,
+      linkWarning: result.linkWarning,
+    });
     trimSearchResults(messages);
     messages.push({
       role: 'user',
@@ -123,7 +135,7 @@ export async function runAgent(messages, { onEvent, onSaveNote }) {
           tool_use_id: toolUse.id,
           content: saveFeedback({
             filename: result.note.filename,
-            updated: result.updated,
+            updated: updatedThisRun,
             linkWarning: result.linkWarning,
           }),
         },

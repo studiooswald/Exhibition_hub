@@ -1,10 +1,11 @@
 import Database from 'better-sqlite3';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { today } from './clock.js';
 
-const DB_NAME = 'exhibition-hub.db';
+const DB_NAME = 'exhibition-bot.db';
 
 fs.mkdirSync(config.dataDir, { recursive: true });
 
@@ -13,15 +14,18 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 // Gespeichert werden nur die Felder einer Notiz. Dateiname und Markdown
-// entstehen daraus beim Ausliefern – so gilt eine Änderung am Notiz-Format
+// entstehen daraus beim Verschicken – so gilt eine Änderung am Notiz-Format
 // rückwirkend auch für alte Notizen.
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
     messages_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+  CREATE INDEX IF NOT EXISTS idx_conversations_chat ON conversations(chat_id, updated_at);
+
   CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nr INTEGER NOT NULL,
@@ -32,66 +36,62 @@ db.exec(`
   );
   CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_conversation
     ON notes(conversation_id) WHERE conversation_id IS NOT NULL;
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
 
-migrateFromFirstVersion();
+// ---- Einstellungen ------------------------------------------------------
 
-/**
- * Die erste Fassung legte Titel, Dateiname und Markdown zusätzlich als Spalten
- * ab. Deren Inhalte stecken alle in fields_json – die Zeilen werden also nur
- * umgehängt, es geht nichts verloren.
- */
-function migrateFromFirstVersion() {
-  const tables = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notes_old'")
-    .all();
-  if (tables.length > 0) return;
+function getSetting(key) {
+  return db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? null;
+}
 
-  const columns = db.prepare('PRAGMA table_info(notes)').all().map((c) => c.name);
-  if (!columns.includes('markdown')) return;
-
-  db.exec('BEGIN');
-  try {
-    db.exec(`
-      ALTER TABLE notes RENAME TO notes_old;
-      CREATE TABLE notes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nr INTEGER NOT NULL,
-        conversation_id TEXT,
-        fields_json TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      INSERT INTO notes (id, nr, conversation_id, fields_json, created_at, updated_at)
-        SELECT id, nr,
-               ${columns.includes('conversation_id') ? 'conversation_id' : 'NULL'},
-               fields_json, created_at, created_at
-          FROM notes_old;
-      DROP TABLE notes_old;
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_conversation
-        ON notes(conversation_id) WHERE conversation_id IS NOT NULL;
-    `);
-    db.exec('COMMIT');
-    console.log('Notizen aus der ersten Fassung übernommen.');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+function setSetting(key, value) {
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, String(value));
 }
 
 // ---- Unterhaltungen -----------------------------------------------------
 
-export function getConversation(id) {
-  const row = db.prepare('SELECT messages_json FROM conversations WHERE id = ?').get(id);
-  return row ? JSON.parse(row.messages_json) : null;
+/**
+ * Die laufende Unterhaltung eines Chats – aber nur, wenn sie noch frisch ist.
+ * Nach einer längeren Pause beginnt die nächste Nachricht eine neue
+ * Ausstellung, damit sie nicht versehentlich als Korrektur der letzten gilt.
+ */
+export function getActiveConversation(chatId, timeoutHours = config.conversationTimeoutHours) {
+  const row = db
+    .prepare('SELECT * FROM conversations WHERE chat_id = ? ORDER BY updated_at DESC LIMIT 1')
+    .get(chatId);
+  if (!row) return null;
+
+  const ageMs = Date.now() - new Date(row.updated_at.replace(' ', 'T') + 'Z').getTime();
+  if (ageMs > timeoutHours * 60 * 60 * 1000) return null;
+
+  return { id: row.id, messages: JSON.parse(row.messages_json) };
+}
+
+export function createConversation(chatId) {
+  const id = crypto.randomUUID();
+  db.prepare('INSERT INTO conversations (id, chat_id) VALUES (?, ?)').run(id, chatId);
+  return { id, messages: [] };
 }
 
 export function saveConversation(id, messages) {
-  db.prepare(`
-    INSERT INTO conversations (id, messages_json) VALUES (?, ?)
-    ON CONFLICT(id) DO UPDATE SET messages_json = excluded.messages_json,
-                                  updated_at = datetime('now')
-  `).run(id, JSON.stringify(messages));
+  db.prepare(
+    "UPDATE conversations SET messages_json = ?, updated_at = datetime('now') WHERE id = ?"
+  ).run(JSON.stringify(messages), id);
+}
+
+/** Beendet die laufende Unterhaltung, sodass die nächste Nachricht neu anfängt. */
+export function endConversation(chatId) {
+  db.prepare(
+    "UPDATE conversations SET updated_at = datetime('now', '-100 years') WHERE chat_id = ?"
+  ).run(chatId);
 }
 
 // ---- Notizen ------------------------------------------------------------
@@ -102,8 +102,15 @@ function hydrate(row) {
 
 /** Nummer, die die nächste neue Notiz bekommt. */
 export function nextNoteNr() {
-  const row = db.prepare('SELECT MAX(nr) AS max_nr FROM notes').get();
-  return Math.max((row?.max_nr ?? 0) + 1, config.startNr);
+  const highest = db.prepare('SELECT MAX(nr) AS max_nr FROM notes').get()?.max_nr ?? 0;
+  const floor = parseInt(getSetting('next_nr') ?? '', 10);
+  return Math.max(highest + 1, Number.isFinite(floor) ? floor : config.startNr);
+}
+
+/** Legt fest, welche Nummer die nächste neue Notiz bekommt (Befehl /nummer). */
+export function setNextNoteNr(nr) {
+  setSetting('next_nr', nr);
+  return nextNoteNr();
 }
 
 export function getNoteByConversation(conversationId) {
@@ -115,8 +122,12 @@ export function getNote(id) {
   return hydrate(db.prepare('SELECT * FROM notes WHERE id = ?').get(id));
 }
 
-export function listNotes() {
-  return db.prepare('SELECT * FROM notes ORDER BY nr DESC').all().map(hydrate);
+export function getNoteByNr(nr) {
+  return hydrate(db.prepare('SELECT * FROM notes WHERE nr = ?').get(nr));
+}
+
+export function listNotes(limit = 100) {
+  return db.prepare('SELECT * FROM notes ORDER BY nr DESC LIMIT ?').all(limit).map(hydrate);
 }
 
 /**
@@ -171,7 +182,7 @@ export function backupNow() {
     }
     return target;
   } catch (err) {
-    // Eine fehlgeschlagene Sicherung darf die App nie aufhalten
+    // Eine fehlgeschlagene Sicherung darf den Bot nie aufhalten
     console.error('Backup fehlgeschlagen:', err.message);
     return null;
   }

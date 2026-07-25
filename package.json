@@ -1,12 +1,12 @@
 {
-  "name": "exhibition-hub",
+  "name": "exhibition-bot",
   "version": "1.0.0",
-  "description": "Persönlicher Ausstellungs-Bot: recherchiert Ausstellungen und erzeugt Obsidian-Notizen",
+  "description": "Telegram-Bot: recherchiert Ausstellungen und erzeugt Obsidian-Notizen",
   "type": "module",
-  "main": "src/server.js",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
     "test": "node --test \"test/**/*.test.js\""
   },
   "engines": {
@@ -15,6 +15,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.0",
     "better-sqlite3": "^12.4.1",
-    "express": "^5.1.0"
+    "node-telegram-bot-api": "^0.66.0"
   }
 }

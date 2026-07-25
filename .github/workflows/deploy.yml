@@ -1,8 +1,9 @@
-name: Deploy auf VPS
+# Optional. Der Bot lässt sich genauso gut von Hand deployen – siehe README.
+# Dieser Workflow startet nur auf Knopfdruck (Actions → Deploy → Run workflow)
+# und braucht dafür die Secrets VPS_HOST, VPS_USER und VPS_SSH_KEY.
+name: Deploy
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -27,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Dateien auf den VPS kopieren
+      - name: Dateien auf den Server kopieren
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -35,9 +36,9 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT || 22 }}
           source: "."
-          target: "~/exhibition-hub"
+          target: "/root/exhibition-bot"
 
-      - name: .env schreiben und Container starten
+      - name: Container neu starten
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -46,42 +47,24 @@ jobs:
           port: ${{ secrets.VPS_PORT || 22 }}
           script: |
             set -e
-            cd ~/exhibition-hub
+            cd /root/exhibition-bot
 
             # Sicherheitskopie der Datenbank, bevor irgendetwas neu startet
-            if [ -f data/exhibition-hub.db ]; then
+            if [ -f data/exhibition-bot.db ]; then
               mkdir -p data/backups
-              cp data/exhibition-hub.db "data/backups/vor-deployment-$(date +%Y%m%d-%H%M%S).db"
+              cp data/exhibition-bot.db "data/backups/vor-deployment-$(date +%Y%m%d-%H%M%S).db"
             fi
 
-            cat > .env <<'EOF'
-            ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-            APP_PASSWORD=${{ secrets.APP_PASSWORD }}
-            SESSION_SECRET=${{ secrets.SESSION_SECRET }}
-            START_NR=${{ secrets.START_NR || 1 }}
-            TIMEZONE=${{ vars.TIMEZONE || 'Europe/Berlin' }}
-            MODEL=${{ vars.MODEL || 'claude-sonnet-5' }}
-            EOF
+            # Die .env liegt auf dem Server und wird hier bewusst nicht überschrieben
+            test -f .env || { echo "Es fehlt die .env auf dem Server."; exit 1; }
 
             docker compose up -d --build
             docker image prune -f
 
-      - name: Prüfen, ob die App wirklich läuft
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
-          script: |
-            cd ~/exhibition-hub
             for i in $(seq 1 20); do
-              if [ "$(docker compose ps --format '{{.Health}}' app)" = "healthy" ]; then
-                echo "App ist gesund."
-                exit 0
-              fi
+              [ "$(docker inspect -f '{{.State.Health.Status}}' exhibition-bot)" = "healthy" ] && exit 0
               sleep 5
             done
-            echo "App wurde nicht gesund – letzte Logzeilen:"
-            docker compose logs --tail=50 app
+            echo "Bot wurde nicht gesund – letzte Logzeilen:"
+            docker compose logs --tail=50
             exit 1
