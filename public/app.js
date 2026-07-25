@@ -27,16 +27,13 @@ function newConversationId() {
   return id;
 }
 
-// ---- Init ----------------------------------------------------------------
+// ---- Start ---------------------------------------------------------------
 
 async function init() {
   const res = await fetch('/api/me');
   const { authed } = await res.json();
-  if (authed) {
-    showApp();
-  } else {
-    loginView.classList.remove('hidden');
-  }
+  if (authed) showApp();
+  else loginView.classList.remove('hidden');
 }
 
 async function showApp() {
@@ -80,7 +77,7 @@ $('#login-form').addEventListener('submit', async (e) => {
   }
 });
 
-// ---- Chat ----------------------------------------------------------------
+// ---- Nachrichten ---------------------------------------------------------
 
 function addMessage(role, text) {
   const wrap = document.createElement('div');
@@ -103,15 +100,21 @@ function addStatus(text) {
   return el;
 }
 
+function scrollDown() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+// ---- Notiz-Karte ---------------------------------------------------------
+
 /**
- * Zeigt eine Notiz im Chat. Ist die Notiz schon zu sehen (Korrektur, oder
- * Klick auf denselben Eintrag im Verlauf), wird die vorhandene Karte
- * aktualisiert statt eine zweite anzulegen.
+ * Zeigt eine Notiz im Chat. Ist sie schon zu sehen – nach einer Korrektur oder
+ * beim Klick auf denselben Eintrag im Verlauf – wird die vorhandene Karte
+ * aktualisiert, statt eine zweite anzulegen.
  */
-function showNoteCard(note) {
+function showNoteCard(note, linkWarning) {
   const existing = noteCards.get(note.id);
   if (existing) {
-    fillNoteCard(existing, note);
+    fillNoteCard(existing, note, linkWarning);
     existing.classList.add('note-card--updated');
     setTimeout(() => existing.classList.remove('note-card--updated'), 1800);
     existing.scrollIntoView({ block: 'nearest' });
@@ -119,12 +122,12 @@ function showNoteCard(note) {
   }
 
   const card = $('#note-card-template').content.cloneNode(true).querySelector('.note-card');
-  fillNoteCard(card, note);
+  fillNoteCard(card, note, linkWarning);
   card.querySelector('.copy-btn').addEventListener('click', (e) =>
-    copyToClipboard(card.dataset.markdown, e.target, 'Kopiert ✓', 'Notiz kopieren')
+    copyToClipboard(card.dataset.markdown, e.target, 'Notiz kopieren')
   );
   card.querySelector('.copy-filename-btn').addEventListener('click', (e) =>
-    copyToClipboard(card.dataset.filename, e.target, 'Kopiert ✓', 'Name kopieren')
+    copyToClipboard(card.dataset.filename, e.target, 'Name kopieren')
   );
 
   const wrap = document.createElement('div');
@@ -135,18 +138,55 @@ function showNoteCard(note) {
   scrollDown();
 }
 
-function fillNoteCard(card, { filename, markdown }) {
-  card.dataset.filename = filename;
-  card.dataset.markdown = markdown;
-  card.querySelector('.note-filename').textContent = filename;
-  card.querySelector('.note-markdown').textContent = markdown;
+function fillNoteCard(card, note, linkWarning) {
+  card.dataset.filename = note.filename;
+  card.dataset.markdown = note.markdown;
+  card.querySelector('.note-filename').textContent = note.filename;
+  card.querySelector('.note-markdown').textContent = note.markdown;
+
+  // Den Link zeigen, damit vor dem Einfügen in Obsidian kurz geprüft werden
+  // kann, ob wirklich die richtige Ausstellungsseite dahintersteckt.
+  const linkEl = card.querySelector('.note-link');
+  linkEl.innerHTML = '';
+  linkEl.classList.toggle('note-link--warn', Boolean(linkWarning) || !note.link);
+
+  if (note.link) {
+    const anchor = document.createElement('a');
+    anchor.href = note.link;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.textContent = shortenUrl(note.link);
+    linkEl.appendChild(anchor);
+  } else {
+    const span = document.createElement('span');
+    span.textContent = 'Kein Link zur Ausstellung';
+    linkEl.appendChild(span);
+  }
+
+  if (linkWarning) {
+    const hint = document.createElement('span');
+    hint.className = 'note-link-hint';
+    hint.textContent = linkWarning;
+    linkEl.appendChild(hint);
+  }
 }
 
-async function copyToClipboard(text, btn, doneLabel, normalLabel) {
+function shortenUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.replace(/\/$/, '');
+    const text = parsed.host + path;
+    return text.length > 60 ? text.slice(0, 57) + '…' : text;
+  } catch {
+    return url;
+  }
+}
+
+async function copyToClipboard(text, btn, normalLabel) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    // Fallback für ältere Browser / http
+    // Fallback für ältere Browser oder http
     const ta = document.createElement('textarea');
     ta.value = text;
     document.body.appendChild(ta);
@@ -155,16 +195,14 @@ async function copyToClipboard(text, btn, doneLabel, normalLabel) {
     ta.remove();
   }
   btn.classList.add('copied');
-  btn.textContent = doneLabel;
+  btn.textContent = 'Kopiert ✓';
   setTimeout(() => {
     btn.classList.remove('copied');
     btn.textContent = normalLabel;
   }, 1600);
 }
 
-function scrollDown() {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-}
+// ---- Senden --------------------------------------------------------------
 
 chatForm.addEventListener('submit', (e) => {
   e.preventDefault();
@@ -194,6 +232,10 @@ async function sendMessage() {
 
   let assistantBubble = null;
   let statusEl = addStatus('Denke nach …');
+  const clearStatus = () => {
+    statusEl?.remove();
+    statusEl = null;
+  };
 
   try {
     const res = await fetch('/api/chat', {
@@ -201,7 +243,7 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversationId, message: text }),
     });
-    if (!res.ok || !res.body) throw new Error('Request fehlgeschlagen');
+    if (!res.ok || !res.body) throw new Error('Anfrage fehlgeschlagen');
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -220,8 +262,7 @@ async function sendMessage() {
         if (!event) continue;
 
         if (event.type === 'text') {
-          statusEl?.remove();
-          statusEl = null;
+          clearStatus();
           if (!assistantBubble) assistantBubble = addMessage('assistant', '');
           assistantBubble.textContent += event.data.text;
           scrollDown();
@@ -229,15 +270,13 @@ async function sendMessage() {
           if (statusEl) statusEl.textContent = event.data.text;
           else statusEl = addStatus(event.data.text);
         } else if (event.type === 'note') {
-          statusEl?.remove();
-          statusEl = null;
-          showNoteCard(event.data);
+          clearStatus();
+          showNoteCard(event.data.note, event.data.linkWarning);
           loadNotes();
-          // Nach der Notiz folgt noch der Abschlusssatz – als neue Blase
+          // Danach folgt noch der Abschlusssatz – der gehört in eine neue Blase
           assistantBubble = null;
         } else if (event.type === 'error') {
-          statusEl?.remove();
-          statusEl = null;
+          clearStatus();
           addMessage('assistant', '⚠️ ' + event.data.error);
         }
       }
@@ -245,7 +284,7 @@ async function sendMessage() {
   } catch {
     addMessage('assistant', '⚠️ Verbindungsfehler – bitte erneut versuchen.');
   } finally {
-    statusEl?.remove();
+    clearStatus();
     busy = false;
     sendBtn.disabled = false;
     chatInput.focus();
@@ -267,12 +306,13 @@ function parseSSE(raw) {
   }
 }
 
-// ---- Notizen-Verlauf -----------------------------------------------------
+// ---- Notizen-Liste -------------------------------------------------------
 
 async function loadNotes() {
   const res = await fetch('/api/notes');
   if (!res.ok) return;
   const notes = await res.json();
+
   notesList.innerHTML = '';
   if (notes.length === 0) {
     const li = document.createElement('li');
@@ -281,9 +321,7 @@ async function loadNotes() {
     notesList.appendChild(li);
     return;
   }
-  for (const note of notes) {
-    notesList.appendChild(buildNoteListItem(note));
-  }
+  for (const note of notes) notesList.appendChild(buildNoteListItem(note));
 }
 
 function buildNoteListItem(note) {
@@ -295,11 +333,12 @@ function buildNoteListItem(note) {
   const date = document.createElement('span');
   date.className = 'note-date';
   date.textContent = new Date(note.created_at + 'Z').toLocaleDateString('de-DE');
+  if (!note.link) date.textContent += ' · ohne Link';
   label.appendChild(date);
   label.addEventListener('click', async () => {
-    const r = await fetch(`/api/notes/${note.id}`);
-    if (!r.ok) return;
-    showNoteCard(await r.json());
+    const res = await fetch(`/api/notes/${note.id}`);
+    if (!res.ok) return;
+    showNoteCard(await res.json());
     sidebar.classList.remove('open');
   });
 
@@ -310,8 +349,8 @@ function buildNoteListItem(note) {
   del.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (!confirm(`„${note.filename}" wirklich löschen?`)) return;
-    const r = await fetch(`/api/notes/${note.id}`, { method: 'DELETE' });
-    if (!r.ok) return;
+    const res = await fetch(`/api/notes/${note.id}`, { method: 'DELETE' });
+    if (!res.ok) return;
     noteCards.get(note.id)?.closest('.message')?.remove();
     noteCards.delete(note.id);
     loadNotes();

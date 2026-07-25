@@ -15,6 +15,33 @@ Persönlicher Ausstellungs-Bot unter **exh.studiooswald.com**: Du erzählst im C
 - **Korrigieren:** Stimmt eine Angabe nicht, sag es dem Bot einfach im selben Chat („das Enddatum ist der 28.2."). Er aktualisiert die bestehende Notiz – sie behält ihre Nummer, es entsteht keine zweite.
 - **Weitermachen nach einem Reload:** Die Unterhaltung wird gemerkt. Wenn Safari den Tab verwirft, machst du nach dem Öffnen einfach weiter. Für eine neue Ausstellung auf **+ Neu** tippen.
 - **Löschen:** In der Notizliste links liegt hinter jedem Eintrag ein **✕**.
+- **Sichern:** Unten in der Notizliste lädt „Alle Notizen sichern" alles als JSON herunter.
+
+### Der Link zur Ausstellung
+
+Das Feld, bei dem Web-Recherche am ehesten danebengreift – deshalb wird es besonders behandelt:
+
+- Der Bot muss die offizielle Seite **genau dieser** Ausstellung liefern, nicht die Startseite des Museums, keine Übersichtsliste, kein Kunstportal. Erfinden ist ihm ausdrücklich untersagt.
+- Beim Speichern wird die Adresse aufgeräumt (Tracking-Parameter, Anker, Markdown-Klammern) und einmal angefragt. Zeigt sie nur auf die Startseite oder antwortet sie mit 404, bekommt der Bot das zurückgemeldet, sucht noch einmal und speichert die bessere Adresse.
+- Findet er nichts, sagt er es offen, statt etwas zu erfinden – die Notiz wird trotzdem gespeichert.
+- In der Notiz-Karte steht der Link zum Antippen, damit du vor dem Einfügen in Obsidian kurz prüfen kannst, ob die richtige Seite dahintersteckt. Notizen ohne Link sind in der Liste als „ohne Link" markiert.
+
+## Aufbau des Codes
+
+| Datei | Zuständig für |
+|---|---|
+| `src/config.js` | alle Einstellungen an einer Stelle, geprüft beim Start |
+| `src/server.js` / `src/app.js` | Start und Zusammenstecken der Routen |
+| `src/auth.js` | Anmeldung, Session-Token, Bremse gegen Passwort-Raten |
+| `src/agent.js` | Gesprächsschleife mit Claude, Prompt-Caching, Verlauf aufräumen |
+| `src/prompt.js` | System-Prompt und Definition des `save_note`-Werkzeugs |
+| `src/mock-agent.js` | simulierter Bot für Tests und zum Ausprobieren ohne API-Key |
+| `src/note.js` | Felder normalisieren, Dateiname und Obsidian-Markdown erzeugen |
+| `src/link.js` | Links aufräumen und prüfen |
+| `src/db.js` | SQLite, Nummerierung, Backups |
+| `src/routes/` | HTTP-Endpunkte für Chat und Notizen |
+
+Gespeichert werden nur die **Felder** einer Notiz – Dateiname und Markdown entstehen daraus beim Ausliefern. Eine Änderung am Notiz-Format gilt dadurch rückwirkend auch für alte Notizen.
 
 ## Einrichtung (komplett vom iPad aus möglich)
 
@@ -101,11 +128,15 @@ Updates später: `cd ~/exhibition-hub && git pull && docker compose up -d --buil
 
 ```bash
 npm install
-APP_PASSWORD=test SESSION_SECRET=dev-secret MOCK_AGENT=1 START_NR=26 npm start
+npm test        # 40 Tests, kein API-Key und kein Netz nötig
+
+APP_PASSWORD=test-passwort SESSION_SECRET=ein-langes-dev-secret MOCK_AGENT=1 START_NR=26 npm start
 # → http://localhost:3000  (MOCK_AGENT=1 simuliert den Bot ohne API-Key)
 ```
 
-Der simulierte Bot speichert bei der zweiten Nachricht eine Notiz und bei jeder weiteren eine Korrektur derselben Notiz – damit lassen sich Nummerierung, Aktualisieren und Wiederherstellen ohne API-Key durchspielen.
+Der simulierte Bot spielt den echten Ablauf nach: recherchieren, in einer Nachricht nachfragen, speichern, einen bemängelten Link nachbessern und ab der dritten Nachricht eine Korrektur einarbeiten. Damit lassen sich Nummerierung, Aktualisieren, Link-Prüfung und Wiederherstellen ohne API-Key durchspielen.
+
+Die Tests decken die Stellen ab, an denen die erste Fassung Ärger gemacht hat: Nummerierung und START_NR, Korrektur ohne zweite Notiz, Wiederherstellen nach Reload, Aufräumen des Verlaufs, Cache-Punkte, Link-Behandlung (inklusive 404 und ausgesperrter Bots gegen einen lokalen Testserver), Anmeldung samt Sperre und Ablauf des Tokens. Die Deploy-Action führt sie vor jedem Ausrollen aus – schlagen sie fehl, wird nicht deployt.
 
 ### Weitere Einstellungen
 
@@ -118,6 +149,7 @@ Alle optional, per Umgebungsvariable bzw. `.env` (siehe `.env.example`):
 | `MODEL` | `claude-sonnet-5` | verwendetes Modell |
 | `BACKUP_KEEP` | `14` | wie viele tägliche Backups aufgehoben werden |
 | `SESSION_DAYS` | `365` | wie lange man angemeldet bleibt |
+| `LINK_CHECK` | `1` | Ausstellungsseite beim Speichern anfragen; `0` schaltet das ab |
 
 ## Notiz-Format
 
@@ -149,4 +181,11 @@ Link: https://www.lenbachhaus.de/…
 …
 ```
 
-Die Datumsfelder sind im ISO-Format, damit Obsidian sie als Date-Properties erkennt. In der Notiz-Karte gibt es je einen Button für den Dateinamen und den Markdown-Inhalt.
+Die Datumsfelder sind im ISO-Format, damit Obsidian sie als Date-Properties erkennt. In der Notiz-Karte gibt es je einen Button für den Dateinamen und den Markdown-Inhalt, dazwischen den Link zum Antippen.
+
+## Was als Nächstes sinnvoll wäre
+
+Bewusst noch nicht gebaut, damit der Kern schlank bleibt:
+
+- **Fotos:** Ausstellungsbilder im Chat hochladen und als Anhang in die Notiz legen.
+- **Direkt nach Obsidian schreiben:** statt kopieren die Datei gleich in einen Sync-Ordner legen (iCloud/Dropbox) oder per Obsidian-URI anlegen.

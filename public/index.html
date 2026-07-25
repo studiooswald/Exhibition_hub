@@ -28,6 +28,9 @@
         <button id="new-chat" title="Neue Unterhaltung">+ Neu</button>
       </div>
       <ul id="notes-list" class="notes-list"></ul>
+      <div class="sidebar-footer">
+        <a id="export-link" href="/api/export" download>Alle Notizen sichern</a>
+      </div>
     </aside>
 
     <main class="chat-area">
@@ -35,7 +38,7 @@
         <button id="toggle-sidebar" class="icon-btn" title="Verlauf">☰</button>
         <span class="chat-title">Exhibition Hub</span>
       </header>
-      <!-- Inhalt kommt aus app.js: entweder die Begrüßung oder der wiederhergestellte Verlauf -->
+      <!-- Inhalt kommt aus app.js: Begrüßung oder wiederhergestellter Verlauf -->
       <div id="messages" class="messages"></div>
       <form id="chat-form" class="chat-form">
         <textarea id="chat-input" rows="1" placeholder="z.B. War gestern in ‚Shifting the Silence' im Lenbachhaus …"></textarea>
@@ -53,6 +56,7 @@
           <button class="copy-btn" title="Notiz als Markdown kopieren">Notiz kopieren</button>
         </div>
       </div>
+      <div class="note-link"></div>
       <pre class="note-markdown"></pre>
     </div>
   </template>

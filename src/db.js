@@ -1,52 +1,83 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import { config } from './config.js';
 import { today } from './clock.js';
 
-const DATA_DIR = process.env.DATA_DIR || './data';
-const BACKUP_DIR = path.join(DATA_DIR, 'backups');
-const BACKUP_KEEP = Math.max(1, parseInt(process.env.BACKUP_KEEP || '14', 10) || 14);
+const DB_NAME = 'exhibition-hub.db';
 
-// Nummer, die die nächste Notiz bekommen soll, solange die Datenbank leer ist.
-// Damit schließt der Bot an die Notizen an, die schon in Obsidian liegen.
-const START_NR = Math.max(1, parseInt(process.env.START_NR || '1', 10) || 1);
+fs.mkdirSync(config.dataDir, { recursive: true });
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const db = new Database(path.join(DATA_DIR, 'exhibition-hub.db'));
+const db = new Database(path.join(config.dataDir, DB_NAME));
 db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
+// Gespeichert werden nur die Felder einer Notiz. Dateiname und Markdown
+// entstehen daraus beim Ausliefern – so gilt eine Änderung am Notiz-Format
+// rückwirkend auch für alte Notizen.
 db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
+    messages_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    messages_json TEXT NOT NULL DEFAULT '[]'
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nr INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    markdown TEXT NOT NULL,
-    fields_json TEXT NOT NULL,
     conversation_id TEXT,
+    fields_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_conversation
+    ON notes(conversation_id) WHERE conversation_id IS NOT NULL;
 `);
 
-// Migration für Datenbanken aus der ersten Version
-const noteColumns = db.prepare('PRAGMA table_info(notes)').all().map((c) => c.name);
-if (!noteColumns.includes('conversation_id')) {
-  db.exec('ALTER TABLE notes ADD COLUMN conversation_id TEXT');
+migrateFromFirstVersion();
+
+/**
+ * Die erste Fassung legte Titel, Dateiname und Markdown zusätzlich als Spalten
+ * ab. Deren Inhalte stecken alle in fields_json – die Zeilen werden also nur
+ * umgehängt, es geht nichts verloren.
+ */
+function migrateFromFirstVersion() {
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notes_old'")
+    .all();
+  if (tables.length > 0) return;
+
+  const columns = db.prepare('PRAGMA table_info(notes)').all().map((c) => c.name);
+  if (!columns.includes('markdown')) return;
+
+  db.exec('BEGIN');
+  try {
+    db.exec(`
+      ALTER TABLE notes RENAME TO notes_old;
+      CREATE TABLE notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nr INTEGER NOT NULL,
+        conversation_id TEXT,
+        fields_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO notes (id, nr, conversation_id, fields_json, created_at, updated_at)
+        SELECT id, nr,
+               ${columns.includes('conversation_id') ? 'conversation_id' : 'NULL'},
+               fields_json, created_at, created_at
+          FROM notes_old;
+      DROP TABLE notes_old;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_conversation
+        ON notes(conversation_id) WHERE conversation_id IS NOT NULL;
+    `);
+    db.exec('COMMIT');
+    console.log('Notizen aus der ersten Fassung übernommen.');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
-if (!noteColumns.includes('updated_at')) {
-  db.exec("ALTER TABLE notes ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
-}
-db.exec(`
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_conversation
-    ON notes(conversation_id) WHERE conversation_id IS NOT NULL
-`);
 
 // ---- Unterhaltungen -----------------------------------------------------
 
@@ -58,21 +89,34 @@ export function getConversation(id) {
 export function saveConversation(id, messages) {
   db.prepare(`
     INSERT INTO conversations (id, messages_json) VALUES (?, ?)
-    ON CONFLICT(id) DO UPDATE SET messages_json = excluded.messages_json
+    ON CONFLICT(id) DO UPDATE SET messages_json = excluded.messages_json,
+                                  updated_at = datetime('now')
   `).run(id, JSON.stringify(messages));
 }
 
 // ---- Notizen ------------------------------------------------------------
 
+function hydrate(row) {
+  return row ? { ...row, fields: JSON.parse(row.fields_json) } : null;
+}
+
+/** Nummer, die die nächste neue Notiz bekommt. */
 export function nextNoteNr() {
   const row = db.prepare('SELECT MAX(nr) AS max_nr FROM notes').get();
-  return Math.max((row?.max_nr ?? 0) + 1, START_NR);
+  return Math.max((row?.max_nr ?? 0) + 1, config.startNr);
 }
 
 export function getNoteByConversation(conversationId) {
   if (!conversationId) return null;
-  const row = db.prepare('SELECT * FROM notes WHERE conversation_id = ?').get(conversationId);
-  return row ? { ...row, fields: JSON.parse(row.fields_json) } : null;
+  return hydrate(db.prepare('SELECT * FROM notes WHERE conversation_id = ?').get(conversationId));
+}
+
+export function getNote(id) {
+  return hydrate(db.prepare('SELECT * FROM notes WHERE id = ?').get(id));
+}
+
+export function listNotes() {
+  return db.prepare('SELECT * FROM notes ORDER BY nr DESC').all().map(hydrate);
 }
 
 /**
@@ -80,33 +124,22 @@ export function getNoteByConversation(conversationId) {
  * eine gibt. Korrekturen erzeugen dadurch keine zweite Notiz und verbrauchen
  * keine weitere Nummer.
  */
-export function upsertNote({ id, conversationId, nr, title, filename, markdown, fields }) {
+export function saveNoteFields({ conversationId, fields }) {
+  const existing = getNoteByConversation(conversationId);
   const fieldsJson = JSON.stringify(fields);
-  if (id) {
-    db.prepare(`
-      UPDATE notes
-         SET title = ?, filename = ?, markdown = ?, fields_json = ?, updated_at = datetime('now')
-       WHERE id = ?
-    `).run(title, filename, markdown, fieldsJson, id);
-    return id;
+
+  if (existing) {
+    db.prepare(
+      "UPDATE notes SET fields_json = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(fieldsJson, existing.id);
+    return { id: existing.id, nr: existing.nr, updated: true };
   }
-  const result = db.prepare(`
-    INSERT INTO notes (nr, title, filename, markdown, fields_json, conversation_id, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-  `).run(nr, title, filename, markdown, fieldsJson, conversationId || null);
-  return result.lastInsertRowid;
-}
 
-export function listNotes() {
-  return db.prepare(`
-    SELECT id, nr, title, filename, created_at FROM notes ORDER BY nr DESC
-  `).all();
-}
-
-export function getNote(id) {
-  const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id);
-  if (!row) return null;
-  return { ...row, fields: JSON.parse(row.fields_json) };
+  const nr = nextNoteNr();
+  const result = db
+    .prepare('INSERT INTO notes (nr, conversation_id, fields_json) VALUES (?, ?, ?)')
+    .run(nr, conversationId || null, fieldsJson);
+  return { id: Number(result.lastInsertRowid), nr, updated: false };
 }
 
 export function deleteNote(id) {
@@ -115,28 +148,30 @@ export function deleteNote(id) {
 
 // ---- Backups ------------------------------------------------------------
 
+const backupDir = () => path.join(config.dataDir, 'backups');
+
 /**
- * Schreibt eine konsistente Kopie der Datenbank nach data/backups/.
- * Höchstens eine Sicherung pro Tag, ältere als BACKUP_KEEP werden gelöscht.
+ * Legt eine konsistente Kopie der Datenbank an, höchstens eine pro Tag.
+ * Ältere als BACKUP_KEEP werden entfernt.
  */
 export function backupNow() {
   try {
-    fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    const target = path.join(BACKUP_DIR, `exhibition-hub-${today()}.db`);
+    fs.mkdirSync(backupDir(), { recursive: true });
+    const target = path.join(backupDir(), `${DB_NAME}.${today()}.bak`);
     if (fs.existsSync(target)) return null;
 
     db.prepare('VACUUM INTO ?').run(target);
 
     const files = fs
-      .readdirSync(BACKUP_DIR)
-      .filter((f) => f.startsWith('exhibition-hub-') && f.endsWith('.db'))
+      .readdirSync(backupDir())
+      .filter((name) => name.startsWith(`${DB_NAME}.`) && name.endsWith('.bak'))
       .sort();
-    for (const file of files.slice(0, Math.max(0, files.length - BACKUP_KEEP))) {
-      fs.rmSync(path.join(BACKUP_DIR, file), { force: true });
+    for (const name of files.slice(0, Math.max(0, files.length - config.backupKeep))) {
+      fs.rmSync(path.join(backupDir(), name), { force: true });
     }
     return target;
   } catch (err) {
-    // Eine fehlgeschlagene Sicherung darf die App nie stoppen
+    // Eine fehlgeschlagene Sicherung darf die App nie aufhalten
     console.error('Backup fehlgeschlagen:', err.message);
     return null;
   }
@@ -144,7 +179,7 @@ export function backupNow() {
 
 export function startBackupSchedule() {
   backupNow();
-  setInterval(backupNow, 6 * 60 * 60 * 1000).unref();
+  return setInterval(backupNow, 6 * 60 * 60 * 1000).unref();
 }
 
 export default db;

@@ -136,6 +136,17 @@ body {
 .notes-list .empty { color: var(--muted); cursor: default; }
 .notes-list .empty:hover { background: none; }
 
+.sidebar-footer {
+  border-top: 1px solid var(--line);
+  padding: 0.75rem 1.25rem calc(0.75rem + env(safe-area-inset-bottom));
+}
+.sidebar-footer a {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+.sidebar-footer a:hover { color: var(--ink); text-decoration: underline; }
+
 /* Auf Touch-Geräten gibt es kein Hover – Löschen muss trotzdem erreichbar sein */
 @media (hover: none) {
   .notes-list .note-delete { opacity: 0.5; }
@@ -249,6 +260,21 @@ body {
   border: 1px solid var(--line);
 }
 .note-actions button.copied { background: #3d7a46; color: #fff; border-color: #3d7a46; }
+.note-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.82rem;
+  background: var(--surface);
+}
+.note-link a { color: var(--ink); word-break: break-all; }
+.note-link a::after { content: ' ↗'; color: var(--muted); }
+.note-link--warn { background: #fdf6e6; }
+.note-link--warn span:first-child { color: #8a6d1f; }
+.note-link-hint { color: #8a6d1f; font-size: 0.78rem; line-height: 1.4; }
+
 .note-markdown {
   padding: 1rem;
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;

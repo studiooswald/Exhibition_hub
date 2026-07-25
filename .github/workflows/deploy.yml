@@ -10,7 +10,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +60,7 @@ jobs:
             SESSION_SECRET=${{ secrets.SESSION_SECRET }}
             START_NR=${{ secrets.START_NR || 1 }}
             TIMEZONE=${{ vars.TIMEZONE || 'Europe/Berlin' }}
+            MODEL=${{ vars.MODEL || 'claude-sonnet-5' }}
             EOF
 
             docker compose up -d --build
