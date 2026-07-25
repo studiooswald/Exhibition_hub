@@ -9,8 +9,23 @@ const sendBtn = $('#send-btn');
 const notesList = $('#notes-list');
 const sidebar = $('#sidebar');
 
-let conversationId = crypto.randomUUID();
+const GREETING =
+  'In welcher Ausstellung warst du? Erzähl mir einfach kurz, was du gesehen hast – ich recherchiere den Rest und baue dir die Obsidian-Notiz.';
+
+// Die Unterhaltung überlebt einen Reload: Safari wirft Tabs im Hintergrund
+// gerne raus, der Verlauf liegt aber auf dem Server.
+const STORAGE_KEY = 'exhibition-hub.conversationId';
+let conversationId = localStorage.getItem(STORAGE_KEY) || newConversationId();
 let busy = false;
+
+// Notiz-Karten im Chat, damit eine Korrektur die bestehende Karte ersetzt
+const noteCards = new Map();
+
+function newConversationId() {
+  const id = crypto.randomUUID();
+  localStorage.setItem(STORAGE_KEY, id);
+  return id;
+}
 
 // ---- Init ----------------------------------------------------------------
 
@@ -24,11 +39,30 @@ async function init() {
   }
 }
 
-function showApp() {
+async function showApp() {
   loginView.classList.add('hidden');
   appView.classList.remove('hidden');
   loadNotes();
+  await restoreConversation();
   chatInput.focus();
+}
+
+async function restoreConversation() {
+  messagesEl.innerHTML = '';
+  noteCards.clear();
+  try {
+    const res = await fetch(`/api/conversations/${conversationId}`);
+    if (!res.ok) throw new Error('nicht ladbar');
+    const { messages, note } = await res.json();
+    if (messages.length === 0) {
+      addMessage('assistant', GREETING);
+      return;
+    }
+    for (const message of messages) addMessage(message.role, message.text);
+    if (note) showNoteCard(note);
+  } catch {
+    addMessage('assistant', GREETING);
+  }
 }
 
 $('#login-form').addEventListener('submit', async (e) => {
@@ -41,7 +75,8 @@ $('#login-form').addEventListener('submit', async (e) => {
   if (res.ok) {
     showApp();
   } else {
-    $('#login-error').textContent = 'Falsches Passwort';
+    const { error } = await res.json().catch(() => ({}));
+    $('#login-error').textContent = error || 'Falsches Passwort';
   }
 });
 
@@ -68,22 +103,43 @@ function addStatus(text) {
   return el;
 }
 
-function addNoteCard({ filename, markdown }) {
-  const tpl = $('#note-card-template').content.cloneNode(true);
-  const card = tpl.querySelector('.note-card');
-  card.querySelector('.note-filename').textContent = filename;
-  card.querySelector('.note-markdown').textContent = markdown;
+/**
+ * Zeigt eine Notiz im Chat. Ist die Notiz schon zu sehen (Korrektur, oder
+ * Klick auf denselben Eintrag im Verlauf), wird die vorhandene Karte
+ * aktualisiert statt eine zweite anzulegen.
+ */
+function showNoteCard(note) {
+  const existing = noteCards.get(note.id);
+  if (existing) {
+    fillNoteCard(existing, note);
+    existing.classList.add('note-card--updated');
+    setTimeout(() => existing.classList.remove('note-card--updated'), 1800);
+    existing.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+
+  const card = $('#note-card-template').content.cloneNode(true).querySelector('.note-card');
+  fillNoteCard(card, note);
   card.querySelector('.copy-btn').addEventListener('click', (e) =>
-    copyToClipboard(markdown, e.target, 'Kopiert ✓', 'Notiz kopieren')
+    copyToClipboard(card.dataset.markdown, e.target, 'Kopiert ✓', 'Notiz kopieren')
   );
   card.querySelector('.copy-filename-btn').addEventListener('click', (e) =>
-    copyToClipboard(filename, e.target, 'Kopiert ✓', 'Name kopieren')
+    copyToClipboard(card.dataset.filename, e.target, 'Kopiert ✓', 'Name kopieren')
   );
+
   const wrap = document.createElement('div');
   wrap.className = 'message assistant';
   wrap.appendChild(card);
   messagesEl.appendChild(wrap);
+  noteCards.set(note.id, card);
   scrollDown();
+}
+
+function fillNoteCard(card, { filename, markdown }) {
+  card.dataset.filename = filename;
+  card.dataset.markdown = markdown;
+  card.querySelector('.note-filename').textContent = filename;
+  card.querySelector('.note-markdown').textContent = markdown;
 }
 
 async function copyToClipboard(text, btn, doneLabel, normalLabel) {
@@ -175,8 +231,10 @@ async function sendMessage() {
         } else if (event.type === 'note') {
           statusEl?.remove();
           statusEl = null;
-          addNoteCard(event.data);
+          showNoteCard(event.data);
           loadNotes();
+          // Nach der Notiz folgt noch der Abschlusssatz – als neue Blase
+          assistantBubble = null;
         } else if (event.type === 'error') {
           statusEl?.remove();
           statusEl = null;
@@ -184,7 +242,7 @@ async function sendMessage() {
         }
       }
     }
-  } catch (err) {
+  } catch {
     addMessage('assistant', '⚠️ Verbindungsfehler – bitte erneut versuchen.');
   } finally {
     statusEl?.remove();
@@ -224,26 +282,51 @@ async function loadNotes() {
     return;
   }
   for (const note of notes) {
-    const li = document.createElement('li');
-    li.textContent = note.filename;
-    const date = document.createElement('span');
-    date.className = 'note-date';
-    date.textContent = new Date(note.created_at + 'Z').toLocaleDateString('de-DE');
-    li.appendChild(date);
-    li.addEventListener('click', async () => {
-      const r = await fetch(`/api/notes/${note.id}`);
-      if (!r.ok) return;
-      addNoteCard(await r.json());
-      sidebar.classList.remove('open');
-    });
-    notesList.appendChild(li);
+    notesList.appendChild(buildNoteListItem(note));
   }
+}
+
+function buildNoteListItem(note) {
+  const li = document.createElement('li');
+
+  const label = document.createElement('div');
+  label.className = 'note-label';
+  label.textContent = note.filename;
+  const date = document.createElement('span');
+  date.className = 'note-date';
+  date.textContent = new Date(note.created_at + 'Z').toLocaleDateString('de-DE');
+  label.appendChild(date);
+  label.addEventListener('click', async () => {
+    const r = await fetch(`/api/notes/${note.id}`);
+    if (!r.ok) return;
+    showNoteCard(await r.json());
+    sidebar.classList.remove('open');
+  });
+
+  const del = document.createElement('button');
+  del.className = 'note-delete';
+  del.title = 'Notiz löschen';
+  del.textContent = '✕';
+  del.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!confirm(`„${note.filename}" wirklich löschen?`)) return;
+    const r = await fetch(`/api/notes/${note.id}`, { method: 'DELETE' });
+    if (!r.ok) return;
+    noteCards.get(note.id)?.closest('.message')?.remove();
+    noteCards.delete(note.id);
+    loadNotes();
+  });
+
+  li.appendChild(label);
+  li.appendChild(del);
+  return li;
 }
 
 // ---- Sonstiges -----------------------------------------------------------
 
 $('#new-chat').addEventListener('click', () => {
-  conversationId = crypto.randomUUID();
+  conversationId = newConversationId();
+  noteCards.clear();
   messagesEl.innerHTML = '';
   addMessage('assistant', 'Neue Unterhaltung – in welcher Ausstellung warst du?');
   sidebar.classList.remove('open');

@@ -5,10 +5,16 @@ Persönlicher Ausstellungs-Bot unter **exh.studiooswald.com**: Du erzählst im C
 ## Wie es funktioniert
 
 - **Backend:** Node.js + Express, Claude (`claude-sonnet-5`) mit Web-Suche
-- **Datenbank:** SQLite (eine Datei im Docker-Volume, kein DB-Server)
+- **Datenbank:** SQLite (eine Datei unter `data/`, kein DB-Server) mit täglichem Backup
 - **Frontend:** schlankes Chat-UI, optimiert auch für iPad/iPhone
 - **Login:** ein Passwort (nur du nutzt die App)
 - **Deployment:** Docker + Caddy (automatisches HTTPS) auf deinem VPS, ausgelöst durch GitHub Actions bei jedem Push auf `main`
+
+### Im Alltag
+
+- **Korrigieren:** Stimmt eine Angabe nicht, sag es dem Bot einfach im selben Chat („das Enddatum ist der 28.2."). Er aktualisiert die bestehende Notiz – sie behält ihre Nummer, es entsteht keine zweite.
+- **Weitermachen nach einem Reload:** Die Unterhaltung wird gemerkt. Wenn Safari den Tab verwirft, machst du nach dem Öffnen einfach weiter. Für eine neue Ausstellung auf **+ Neu** tippen.
+- **Löschen:** In der Notizliste links liegt hinter jedem Eintrag ein **✕**.
 
 ## Einrichtung (komplett vom iPad aus möglich)
 
@@ -25,6 +31,9 @@ Im Repo: **Settings → Secrets and variables → Actions → New repository sec
 | `ANTHROPIC_API_KEY` | Dein API-Key von [console.anthropic.com](https://console.anthropic.com) |
 | `APP_PASSWORD` | Dein Login-Passwort für die App (frei wählbar) |
 | `SESSION_SECRET` | Langer Zufallsstring (z. B. 3× eine UUID aneinanderhängen) |
+| `START_NR` | Nummer, die die **nächste** Notiz bekommen soll – siehe unten |
+
+> **`START_NR` richtig setzen:** Der Bot nummeriert die Dateinamen fortlaufend und würde bei leerer Datenbank mit `1` anfangen. Schau in Obsidian nach deiner zuletzt vergebenen Nummer und trage die nächste ein: liegt dort zuletzt `26 - MÄR …`, dann `START_NR = 27`. Der Wert greift nur, solange der Bot selbst noch keine Notiz gespeichert hat – danach zählt er von seiner höchsten Nummer weiter. Ohne das Secret startet er bei 1.
 
 > **Kein SSH-Key zur Hand?** Bei Infomaniak-VPS (oder jedem anderen Anbieter) kannst du im Kundencenter einen SSH-Key hinterlegen bzw. herunterladen. Der *private* Key kommt in das Secret `VPS_SSH_KEY`, der *öffentliche* muss auf dem VPS in `~/.ssh/authorized_keys` stehen.
 
@@ -43,9 +52,26 @@ Mehr ist nicht nötig. Das HTTPS-Zertifikat holt sich Caddy nach dem ersten Depl
 
 ### 4. Deployen
 
-Push auf den Branch `main` (oder im Repo unter **Actions → Deploy auf VPS → Run workflow** manuell starten). Die Action kopiert den Code auf den VPS, schreibt die `.env` aus den Secrets und startet `docker compose up -d --build`.
+Push auf den Branch `main` (oder im Repo unter **Actions → Deploy auf VPS → Run workflow** manuell starten). Die Action legt zuerst eine Sicherheitskopie der Datenbank an, kopiert den Code auf den VPS, schreibt die `.env` aus den Secrets, startet `docker compose up -d --build` und prüft danach, ob die App wirklich gesund hochkommt. Schlägt der Start fehl, steht in den Action-Logs, woran es lag.
 
 Danach: **https://exh.studiooswald.com** öffnen, mit deinem `APP_PASSWORD` anmelden, loslegen. 🖼️
+
+## Daten und Backups
+
+Alles liegt in `~/exhibition-hub/data/` auf dem VPS:
+
+- `exhibition-hub.db` – Notizen und Unterhaltungen
+- `backups/` – automatische Kopien, eine pro Tag, die letzten 14 werden aufgehoben (`BACKUP_KEEP`), dazu je eine Kopie vor jedem Deployment
+
+Zum Sichern reicht es, den Ordner `data/` zu kopieren – etwa mit `scp -r user@vps:~/exhibition-hub/data ./backup-$(date +%F)`. Zum Wiederherstellen die gewünschte Datei aus `backups/` über `exhibition-hub.db` legen und `docker compose restart app`.
+
+> **Nur relevant, falls schon einmal eine ältere Version lief:** Die Datenbank lag früher in einem Docker-Volume namens `app-data` und liegt jetzt in `./data`. Bestehende Notizen einmalig herüberholen:
+> ```bash
+> cd ~/exhibition-hub && docker compose down
+> docker run --rm -v exhibition-hub_app-data:/from -v "$PWD/data":/to alpine \
+>   sh -c 'cp -a /from/. /to/'
+> docker compose up -d --build
+> ```
 
 ### Falls auf dem VPS schon ein Webserver läuft (nginx o. ä.)
 
@@ -75,9 +101,23 @@ Updates später: `cd ~/exhibition-hub && git pull && docker compose up -d --buil
 
 ```bash
 npm install
-APP_PASSWORD=test SESSION_SECRET=dev-secret MOCK_AGENT=1 npm start
+APP_PASSWORD=test SESSION_SECRET=dev-secret MOCK_AGENT=1 START_NR=26 npm start
 # → http://localhost:3000  (MOCK_AGENT=1 simuliert den Bot ohne API-Key)
 ```
+
+Der simulierte Bot speichert bei der zweiten Nachricht eine Notiz und bei jeder weiteren eine Korrektur derselben Notiz – damit lassen sich Nummerierung, Aktualisieren und Wiederherstellen ohne API-Key durchspielen.
+
+### Weitere Einstellungen
+
+Alle optional, per Umgebungsvariable bzw. `.env` (siehe `.env.example`):
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `START_NR` | `1` | Nummer der nächsten Notiz, solange die Datenbank leer ist |
+| `TIMEZONE` | `Europe/Berlin` | Zeitzone für „heute" und die Datumsfelder |
+| `MODEL` | `claude-sonnet-5` | verwendetes Modell |
+| `BACKUP_KEEP` | `14` | wie viele tägliche Backups aufgehoben werden |
+| `SESSION_DAYS` | `365` | wie lange man angemeldet bleibt |
 
 ## Notiz-Format
 

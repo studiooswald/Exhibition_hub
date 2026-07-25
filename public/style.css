@@ -100,22 +100,46 @@ body {
   padding: 0.5rem;
 }
 .notes-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
   padding: 0.7rem 0.85rem;
   border-radius: 10px;
-  cursor: pointer;
   font-size: 0.88rem;
   line-height: 1.35;
   color: var(--ink);
 }
 .notes-list li:hover { background: var(--bg); }
+.notes-list .note-label { flex: 1; min-width: 0; cursor: pointer; }
 .notes-list li .note-date {
   display: block;
   color: var(--muted);
   font-size: 0.75rem;
   margin-top: 0.15rem;
 }
+.notes-list .note-delete {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0.2rem 0.3rem;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.notes-list li:hover .note-delete,
+.notes-list .note-delete:focus-visible { opacity: 1; }
+.notes-list .note-delete:hover { color: #b3403a; background: var(--surface); }
 .notes-list .empty { color: var(--muted); cursor: default; }
 .notes-list .empty:hover { background: none; }
+
+/* Auf Touch-Geräten gibt es kein Hover – Löschen muss trotzdem erreichbar sein */
+@media (hover: none) {
+  .notes-list .note-delete { opacity: 0.5; }
+}
 
 /* ---- Chat ---- */
 .chat-area {
@@ -187,6 +211,11 @@ body {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   overflow: hidden;
+}
+.note-card--updated {
+  border-color: #3d7a46;
+  box-shadow: 0 0 0 2px rgba(61, 122, 70, 0.25);
+  transition: box-shadow 0.4s ease, border-color 0.4s ease;
 }
 .note-card-header {
   display: flex;

@@ -35,11 +35,8 @@
         <button id="toggle-sidebar" class="icon-btn" title="Verlauf">☰</button>
         <span class="chat-title">Exhibition Hub</span>
       </header>
-      <div id="messages" class="messages">
-        <div class="message assistant">
-          <div class="bubble">In welcher Ausstellung warst du? Erzähl mir einfach kurz, was du gesehen hast – ich recherchiere den Rest und baue dir die Obsidian-Notiz.</div>
-        </div>
-      </div>
+      <!-- Inhalt kommt aus app.js: entweder die Begrüßung oder der wiederhergestellte Verlauf -->
+      <div id="messages" class="messages"></div>
       <form id="chat-form" class="chat-form">
         <textarea id="chat-input" rows="1" placeholder="z.B. War gestern in ‚Shifting the Silence' im Lenbachhaus …"></textarea>
         <button type="submit" id="send-btn">Senden</button>

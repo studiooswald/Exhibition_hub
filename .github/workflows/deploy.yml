@@ -35,10 +35,40 @@ jobs:
           script: |
             set -e
             cd ~/exhibition-hub
+
+            # Sicherheitskopie der Datenbank, bevor irgendetwas neu startet
+            if [ -f data/exhibition-hub.db ]; then
+              mkdir -p data/backups
+              cp data/exhibition-hub.db "data/backups/vor-deployment-$(date +%Y%m%d-%H%M%S).db"
+            fi
+
             cat > .env <<'EOF'
             ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
             APP_PASSWORD=${{ secrets.APP_PASSWORD }}
             SESSION_SECRET=${{ secrets.SESSION_SECRET }}
+            START_NR=${{ secrets.START_NR || 1 }}
+            TIMEZONE=${{ vars.TIMEZONE || 'Europe/Berlin' }}
             EOF
+
             docker compose up -d --build
             docker image prune -f
+
+      - name: Prüfen, ob die App wirklich läuft
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            cd ~/exhibition-hub
+            for i in $(seq 1 20); do
+              if [ "$(docker compose ps --format '{{.Health}}' app)" = "healthy" ]; then
+                echo "App ist gesund."
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "App wurde nicht gesund – letzte Logzeilen:"
+            docker compose logs --tail=50 app
+            exit 1
